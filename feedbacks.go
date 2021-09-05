@@ -1,103 +1,32 @@
-package main
+package models
 
 import (
-	"log"
-	"strings"
-
 	"github.com/go-pg/pg"
-
-	"github.com/JedBeom/zego.life/apierror"
-	"github.com/JedBeom/zego.life/models"
-	"github.com/labstack/echo"
+	"github.com/google/uuid"
 )
 
-func getFeedbacksAll(c echo.Context) error {
-	conn := c.Get("conn").(*pg.Conn)
-	all, err := models.FeedbacksAll(conn)
-	if err != nil {
-		return echo.ErrInternalServerError
-	}
-
-	return c.JSON(200, all)
+func (f *Feedback) Create(db *pg.Conn) error {
+	id, _ := uuid.NewRandom()
+	f.ID = id.String()
+	return db.Insert(f)
 }
 
-func getFeedbacksByUser(c echo.Context) error {
-	conn := c.Get("conn").(*pg.Conn)
-	id := c.Param("user_id")
-	u, ok := c.Get("user").(models.User)
-	if !ok {
-		return apierror.ErrInterface.Send(c)
-	}
-
-	if !strings.Contains(u.Roles, "admin,") && id != u.ID {
-		return echo.ErrUnauthorized
-	}
-
-	fs, err := models.FeedbacksByUser(conn, id)
-	if err != nil {
-		return echo.ErrInternalServerError
-	}
-
-	return c.JSON(200, fs)
+func (f *Feedback) Update(db *pg.Conn) error {
+	_, err := db.Model(f).Column("answer").WherePK().Update()
+	return err
 }
 
-func getFeedbackByID(c echo.Context) error {
-	conn := c.Get("conn").(*pg.Conn)
-	id := c.Param("id")
-	f, err := models.FeedbackByID(conn, id)
-	if err != nil {
-		return echo.ErrNotFound
-	}
-
-	return c.JSON(200, f)
+func FeedbacksByUser(db *pg.Conn, userID string) (fs []Feedback, err error) {
+	err = db.Model(&fs).Where("user_id = ?", userID).Order("created_at DESC").Select()
+	return
 }
 
-func postFeedback(c echo.Context) error {
-	conn := c.Get("conn").(*pg.Conn)
-	u, ok := c.Get("user").(models.User)
-	if !ok {
-		return apierror.ErrInterface.Send(c)
-	}
-
-	p := struct {
-		Content string
-	}{}
-	if err := c.Bind(&p); err != nil {
-		return echo.ErrBadRequest
-	}
-
-	if p.Content == "" {
-		return echo.ErrBadRequest
-	}
-
-	f := models.Feedback{
-		UserID:  u.ID,
-		Content: p.Content,
-	}
-
-	if err := f.Create(conn); err != nil {
-		return echo.ErrInternalServerError
-	}
-
-	return c.NoContent(200)
+func FeedbackByID(db *pg.Conn, id string) (f Feedback, err error) {
+	err = db.Model(&f).Where("id = ?", id).Select()
+	return
 }
 
-func patchFeedbackByID(c echo.Context) error {
-	conn := c.Get("conn").(*pg.Conn)
-	id := c.Param("id")
-	p := models.Feedback{}
-	if err := c.Bind(&p); err != nil {
-		return echo.ErrBadRequest
-	}
-
-	if p.ID != id {
-		return echo.ErrBadRequest
-	}
-
-	if err := p.Update(conn); err != nil {
-		log.Println(err)
-		return echo.ErrInternalServerError
-	}
-
-	return c.NoContent(200)
+func FeedbacksAll(db *pg.Conn) (fs []Feedback, err error) {
+	err = db.Model(&fs).Order("created_at DESC").Relation("User").Select()
+	return
 }

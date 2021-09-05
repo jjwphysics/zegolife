@@ -1,63 +1,30 @@
-package main
+package models
 
 import (
-	"github.com/JedBeom/zego.life/apierror"
-	"github.com/JedBeom/zego.life/models"
 	"github.com/go-pg/pg"
-	"github.com/labstack/echo"
 )
 
-func getDietReviewPossible(c echo.Context) error {
-	u, ok := c.Get("user").(models.User)
-	if !ok {
-		return apierror.ErrInterface.Send(c)
-	}
-
-	dietID := c.Param("diet_id")
-	if dietID == "" {
-		return echo.ErrBadRequest
-	}
-
-	conn := c.Get("conn").(*pg.Conn)
-	diet, err := models.DietReviewPossible(conn, dietID, u.ID)
-	if err != nil {
-		return echo.ErrBadRequest
-	}
-	return c.JSON(200, diet)
+func (r *DietReview) Create(db *pg.Conn) error {
+	return db.Insert(r)
 }
 
-func postDietReview(c echo.Context) error {
-	u, ok := c.Get("user").(models.User)
-	if !ok {
-		return apierror.ErrInterface.Send(c)
+func DietReviewPossible(db *pg.Conn, dietID string, userID string) (d Diet, err error) {
+	// 먼저 리뷰 있는지 확인
+	if exists, err := db.Model(&DietReview{}).Where("diet_id = ?", dietID).
+		Where("user_id = ?", userID).Exists(); exists || err != nil {
+		return d, err
 	}
 
-	dietID := c.Param("diet_id")
-	if dietID == "" {
-		return echo.ErrBadRequest
+	d2u, err := Diet2UserByDietAndUser(db, dietID, userID)
+	if err != nil {
+		return d, err
 	}
 
-	p := struct {
-		Rate      int
-		BestIndex int
-		BestMenu  string
-	}{}
-	if err := c.Bind(&p); err != nil {
-		return echo.ErrBadRequest
+	if !d2u.Applied {
+		return
 	}
 
-	dr := models.DietReview{
-		DietID:    dietID,
-		UserID:    u.ID,
-		Rate:      p.Rate,
-		BestIndex: p.BestIndex,
-		BestMenu:  p.BestMenu,
-	}
-
-	conn := c.Get("conn").(*pg.Conn)
-	if err := dr.Create(conn); err != nil {
-		return echo.ErrInternalServerError
-	}
-
-	return c.NoContent(200)
+	// 존재하지 않으면
+	d, err = DietByID(db, dietID)
+	return
 }

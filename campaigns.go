@@ -1,311 +1,116 @@
-package main
+package models
 
 import (
-	"log"
+	"fmt"
+	"math/rand"
 	"time"
 
-	"github.com/JedBeom/zego.life/parse"
+	"github.com/google/uuid"
 
-	"github.com/JedBeom/zego.life/media"
-	"github.com/JedBeom/zego.life/models"
 	"github.com/go-pg/pg"
-	"github.com/labstack/echo"
-	"github.com/lithammer/shortuuid/v3"
 )
 
-func getCampaign(c echo.Context) error {
-	conn := c.Get("conn").(*pg.Conn)
-	cmp, err := models.CampaignRandomOne(conn)
-	if err != nil {
-		return echo.ErrInternalServerError
+func (cmp *Campaign) CreateNotPayed(conn *pg.Conn) error {
+	cmp.ID = uuid.New().String()
+	cnp := CampaignNotPayed{
+		CampaignBase: cmp.CampaignBase,
 	}
-
-	return c.JSON(200, cmp)
+	return conn.Insert(&cnp)
 }
 
-// admin-only
-func getCampaignsNotPayedPayed(c echo.Context) error {
-	conn := c.Get("conn").(*pg.Conn)
-	cnps, err := models.CampaignsNotPayedPayed(conn)
-	if err != nil {
-		log.Println(err)
-		return err
-	}
+func (cnp *CampaignNotPayed) Create(conn *pg.Conn) error {
+	cnp.ID = uuid.New().String()
 
-	return c.JSON(200, cnps)
-}
+	for {
+		cnp.PayCode = fmt.Sprintf("%04d", rand.Intn(10000))
 
-func getCampaignsByUser(c echo.Context) error {
-	conn := c.Get("conn").(*pg.Conn)
-	u := c.Get("user").(models.User)
-	active := c.QueryParam("active")
-
-	cmps, err := u.Campaigns(conn, active == "true")
-	if err != nil {
-		return err
-	}
-
-	return c.JSON(200, cmps)
-}
-
-func getCampaignsNotPayedByUser(c echo.Context) error {
-	conn := c.Get("conn").(*pg.Conn)
-	u := c.Get("user").(models.User)
-
-	cmps, err := u.CampaignsNotPayed(conn)
-	if err != nil {
-		return err
-	}
-
-	return c.JSON(200, cmps)
-}
-
-func getCampaignNotPayedByID(c echo.Context) error {
-	conn := c.Get("conn").(*pg.Conn)
-	id := c.Param("id")
-	userInclude := c.QueryParam("user_include") == "true"
-
-	cnp, err := models.CampaignNotPayedByID(conn, id)
-	if err != nil {
-		log.Println(err)
-		return err
-	}
-
-	if userInclude {
-		user, err := models.UserByID(conn, cnp.UserID)
-		if err != nil {
+		_, err := CampaignNotPayedByPayCode(conn, cnp.PayCode)
+		if err == pg.ErrNoRows {
+			break
+		} else if err != nil {
 			return err
 		}
-		cnp.User = &user
 	}
 
-	return c.JSON(200, cnp)
+	return conn.Insert(cnp)
 }
 
-func postCampaignNotPayed(c echo.Context) error {
-	conn := c.Get("conn").(*pg.Conn)
-	u := c.Get("user").(models.User)
-	p := struct {
-		Title, SubTitle, ImageSrc, Link string
-		StartAt, EndAt                  time.Time
-	}{}
-	if err := c.Bind(&p); err != nil {
-		return echo.ErrBadRequest
-	}
-
-	cnp := models.CampaignNotPayed{
-		CampaignBase: models.CampaignBase{
-			Title:    p.Title,
-			SubTitle: p.SubTitle,
-			ImageSrc: p.ImageSrc,
-			Link:     p.Link,
-			UserID:   u.ID,
-			StartAt:  p.StartAt,
-			EndAt:    p.EndAt,
-		},
-	}
-	cnp.Price = int(cnp.EndAt.Sub(cnp.StartAt).Hours()) * 20
-
-	if err := cnp.Create(conn); err != nil {
-		log.Println(err)
-		return echo.ErrInternalServerError
-	}
-
-	return c.JSON(200, cnp)
+func CampaignsNotPayedPayed(conn *pg.Conn) (cnps []CampaignNotPayed, err error) {
+	err = conn.Model(&cnps).Where("payed_at is not null").Select()
+	return
 }
 
-func patchCampaignPayment(c echo.Context) error {
-	conn := c.Get("conn").(*pg.Conn)
-	u := c.Get("user").(models.User)
-	id := c.Param("id")
+func CampaignNotPayedByPayCode(conn *pg.Conn, code string) (cnp CampaignNotPayed, err error) {
+	err = conn.Model(&cnp).Where("pay_code = ?", code).First()
+	return
+}
 
-	if id == "" {
-		return echo.ErrBadRequest
-	}
+func (cnp *CampaignNotPayed) UpdatePayment(conn *pg.Conn) error {
+	cnp.UpdatedAt = time.Now()
+	_, err := conn.Model(cnp).Column("payment", "pay_link").WherePK().Update()
+	return err
+}
 
-	cnp, err := models.CampaignNotPayedByID(conn, id)
+func (cnp *CampaignNotPayed) UpdateAll(conn *pg.Conn) error {
+	cnp.UpdatedAt = time.Now()
+	_, err := conn.Model(cnp).WherePK().ExcludeColumn("id", "created_at", "deleted_at", "payed_at", "user_id", "is_ready").Update()
+	return err
+}
+
+func (cnp *CampaignNotPayed) UpdatePayedAt(conn *pg.Conn) error {
+	cnp.UpdatedAt = time.Now()
+	_, err := conn.Model(cnp).WherePK().Column("payed_at").Update()
+	return err
+}
+
+func (cnp *CampaignNotPayed) Move(conn *pg.Conn) error {
+	_, err := conn.Model(cnp).WherePK().Delete()
 	if err != nil {
 		return err
 	}
 
-	if cnp.PayedAt != nil {
-		return echo.ErrBadRequest
-	}
+	cnp.DeletedAt = time.Time{}
 
-	if cnp.UserID != u.ID {
-		return echo.ErrUnauthorized
-	}
-
-	p := struct {
-		Payment int
-	}{}
-	if err := c.Bind(&p); err != nil {
-		return echo.ErrBadRequest
-	}
-	if p.Payment < 0 && p.Payment > 2 {
-		return echo.ErrBadRequest
-	}
-
-	payment := []string{"toss", "kakaopay", "bank"}[p.Payment]
-	cnp.Payment = payment
-	link, err := parse.PayLink(cnp.Payment, cnp.PayCode, cnp.Price)
-	if err != nil {
-		log.Println(err)
-		return err
-	}
-	cnp.PayLink = link
-	if err := cnp.UpdatePayment(conn); err != nil {
-		log.Println(err)
-		return err
-	}
-
-	return c.JSON(200, cnp)
+	return conn.Insert(&Campaign{CampaignBase: cnp.CampaignBase})
 }
 
-func patchCampaignNotPayed(c echo.Context) error {
-	conn := c.Get("conn").(*pg.Conn)
-	u := c.Get("user").(models.User)
-	id := c.Param("id")
-
-	if id == "" {
-		return echo.ErrBadRequest
-	}
-
-	p := struct {
-		Title, SubTitle, Link, ImageSrc string
-		StartAt, EndAt                  time.Time
-	}{}
-	if err := c.Bind(&p); err != nil {
-		return echo.ErrBadRequest
-	}
-
-	cnp, err := models.CampaignNotPayedByID(conn, id)
-	if err != nil {
-		log.Println(err)
-		return err
-	}
-
-	if cnp.PayedAt != nil {
-		return echo.ErrBadRequest
-	}
-
-	cnp.Title = p.Title
-	cnp.SubTitle = p.SubTitle
-	cnp.Link = p.Link
-	cnp.ImageSrc = p.ImageSrc
-	cnp.StartAt = p.StartAt
-	cnp.EndAt = p.EndAt
-
-	if cnp.UserID != u.ID {
-		return echo.ErrUnauthorized
-	}
-
-	cnp.Price = int(cnp.EndAt.Sub(cnp.StartAt).Hours()) * 20
-	if err := cnp.UpdateAll(conn); err != nil {
-		log.Println(err)
-		return err
-	}
-
-	return c.JSON(200, cnp)
+func CampaignNotPayedByID(conn *pg.Conn, id string) (cnp CampaignNotPayed, err error) {
+	err = conn.Model(&cnp).Where("id = ?", id).Select()
+	return
 }
 
-func patchCampaignNotPayedConfirmPay(c echo.Context) error {
-	conn := c.Get("conn").(*pg.Conn)
-	u := c.Get("user").(models.User)
-	p := struct {
-		Payed bool
-	}{}
-	if err := c.Bind(&p); err != nil {
-		return echo.ErrBadRequest
-	}
-	id := c.Param("id")
+func (u User) CampaignsNotPayed(conn *pg.Conn) (cnps []CampaignNotPayed, err error) {
+	err = conn.Model(&cnps).Where("user_id = ?", u.ID).Select()
+	return
+}
 
-	cnp, err := models.CampaignNotPayedByID(conn, id)
-	if err != nil {
-		return err
-	}
+func (cmp *Campaign) Create(conn *pg.Conn) error {
+	cmp.ID = uuid.New().String()
+	return conn.Insert(cmp)
+}
 
-	if cnp.UserID != u.ID {
-		return echo.ErrUnauthorized
-	}
-
-	if p.Payed {
-		now := time.Now()
-		cnp.PayedAt = &now
+func (u User) Campaigns(conn *pg.Conn, active bool) (cmps []Campaign, err error) {
+	q := conn.Model(&cmps).Where("user_id = ?", u.ID)
+	today := time.Now()
+	if active {
+		q.Where("start_at <= ?", today).Where("end_at > ?", today)
 	} else {
-		cnp.PayedAt = nil
+		q.Where("start_at > current_timestamp")
 	}
-
-	if err := cnp.UpdatePayedAt(conn); err != nil {
-		return err
-	}
-
-	return c.NoContent(200)
+	err = q.Select()
+	return
 }
 
-// admin-only
-func patchCampaignMoveByID(c echo.Context) error {
-	conn := c.Get("conn").(*pg.Conn)
-	id := c.Param("id")
-	cnp, err := models.CampaignNotPayedByID(conn, id)
-	if err != nil {
-		return err
-	}
-
-	if err := cnp.Move(conn); err != nil {
-		return err
-	}
-
-	return c.NoContent(200)
+func CampaignsAll(conn *pg.Conn) (cmps []Campaign, err error) {
+	err = conn.Model(&cmps).Select()
+	return
 }
 
-// admin-only for now
-func postCampaign(c echo.Context) error {
-	conn := c.Get("conn").(*pg.Conn)
-	u := c.Get("user").(models.User)
-	p := struct {
-		Title, SubTitle, ImageSrc, Link string
-	}{}
-	if err := c.Bind(&p); err != nil {
-		return echo.ErrBadRequest
-	}
-
-	cmp := models.Campaign{
-		CampaignBase: models.CampaignBase{
-			IsReady:  true,
-			Title:    p.Title,
-			SubTitle: p.SubTitle,
-			ImageSrc: p.ImageSrc,
-			Link:     p.Link,
-			UserID:   u.ID,
-		},
-	}
-	if err := cmp.Create(conn); err != nil {
-		log.Println(err)
-		return echo.ErrInternalServerError
-	}
-
-	return c.String(200, cmp.ID)
-}
-
-func postCampaignImage(c echo.Context) error {
-	fileType := c.FormValue("type")
-	c.Request().ParseMultipartForm(10 << 20)
-	file, err := c.FormFile("file")
+func CampaignRandomOne(conn *pg.Conn) (cmp Campaign, err error) {
+	rand.Seed(time.Now().UnixNano())
+	_, err = conn.QueryOne(&cmp, `select * from campaigns where start_at <= current_timestamp and end_at >= current_timestamp offset floor(random()*(select count(*) from campaigns where start_at <= current_timestamp and end_at >= current_timestamp)) LIMIT 1`)
 	if err != nil {
-		return echo.ErrBadRequest
+		return
 	}
-	src, err := file.Open()
-	if err != nil {
-		return err
-	}
-	defer src.Close()
-
-	link, err := media.UploadFile(src, "campaigns/images/"+shortuuid.New(), fileType)
-	if err != nil {
-		log.Println(err)
-		return err
-	}
-
-	return c.String(200, link)
+	return
 }

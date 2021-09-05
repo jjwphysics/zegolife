@@ -1,25 +1,34 @@
-package main
+package models
 
 import (
-	"net/http"
-
 	"github.com/go-pg/pg"
-
-	"github.com/JedBeom/zego.life/models"
-	"github.com/labstack/echo"
 )
 
-func getDietsByDate(c echo.Context) error {
-	timestamp := c.Param("date")
-	if timestamp == "" {
-		return echo.ErrBadRequest
-	}
+func (d *Diet) Create(db *pg.Conn) error {
+	return db.Insert(d)
+}
 
-	conn := c.Get("conn").(*pg.Conn)
-	ds, err := models.DietsByTimestamp(conn, timestamp)
-	if err != nil || len(ds) == 0 {
-		return echo.ErrNotFound
-	}
+func (d *Diet) Update(db *pg.Conn) error {
+	_, err := db.Model(d).WherePK().Column("content").Update()
+	return err
+}
 
-	return c.JSON(http.StatusOK, ds)
+func DietByID(db *pg.Conn, id string) (d Diet, err error) {
+	err = db.Model(&d).Where("id = ?", id).Select()
+	return
+}
+
+func DietByIDExists(db *pg.Conn, id string) (bool, error) {
+	return db.Model(&Diet{}).Where("id = ?", id).Exists()
+}
+
+func DietsByTimestamp(db *pg.Conn, ts string) (ds []Diet, err error) {
+	ts = ts + "%"
+	err = db.Model(&ds).Where("timestamp LIKE ?", ts).Order("type").Select()
+	for i := range ds {
+		if ds[i].Canceled {
+			ds[i].Content = ""
+		}
+	}
+	return
 }
